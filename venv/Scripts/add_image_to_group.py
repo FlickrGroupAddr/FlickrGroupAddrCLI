@@ -4,6 +4,7 @@ import pprint
 import flickrapi
 import flickrapi.auth
 import os.path
+import datetime
 
 
 def _create_flickr_api_handle( app_flickr_api_key_info, user_flickr_auth_info ):
@@ -24,6 +25,11 @@ def _create_flickr_api_handle( app_flickr_api_key_info, user_flickr_auth_info ):
                                            format='parsed-json')
 
     return flickrapi_handle
+
+
+def _persist_request_set_state( args, request_set_state ):
+    with open( args.request_set_state_json, "w" ) as request_set_state_handle:
+        json.dump( request_set_state, request_set_state_handle, indent=4, sort_keys=True )
 
 
 def _read_request_set_with_state( args ):
@@ -90,11 +96,35 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
     # Read group membership info
     user_group_membership_info = _read_user_groups( args )
 
+    request_set_info = _read_request_set_with_state( args )
+    #print( f"Got request set:\n{json.dumps(request_set_info, indent=4, sort_keys=True)}")
+
     flickrapi_handle = _create_flickr_api_handle( app_flickr_api_key_info, user_flickr_auth_info )
 
-    request_set_info = _read_request_set_with_state( args )
+    for current_request_set_entry in request_set_info['request_set']:
+        print( f"Current entry:\n{json.dumps(current_request_set_entry, indent=4, sort_keys=True)}")
 
-    print( f"Got request set:\n{json.dumps(request_set_info, indent=4, sort_keys=True)}")
+        # Make sure the requested image belongs to this user
+
+        # Make sure the user is a member of the group indicated
+
+        # Get current timestamp
+        current_timestamp = datetime.datetime.now( datetime.timezone.utc ).replace( microsecond=0 )
+        #print( f"Timestamp of this attempt: {current_timestamp.isoformat()}" )
+
+        response_code = flickrapi_handle.groups.pools.add(
+            photo_id=current_request_set_entry['picture_id'],
+            group_id=current_request_set_entry['group_nsid'] )
+
+        if response_code is None:
+            # Success!
+            print( f"Photo {current_request_set_entry['picture_id']} added to group ID {current_request_set_entry['group_nsid']} successfully!" )
+        else:
+            print( f"Error {response_code} hit when adding Photo {current_request_set_entry['picture_id']} added to group ID {current_request_set_entry['group_nsid']}" )
+
+
+        break
+
 
     # # Test our handle, print out our authenticated NSID or something
     # user_groups = flickrapi_handle.groups.pools.getGroups()['groups']['group']
@@ -108,6 +138,8 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
     #
     # with open( args.group_membership_json, "w") as group_membership_handle:
     #     json.dump( culled_group_membership_info, group_membership_handle, indent=4, sort_keys=True )
+
+    _persist_request_set_state( args, request_set_info['request_set_state'] )
 
 
 

@@ -4,10 +4,13 @@ import flickrapi
 import re
 import html
 import copy
+import os.path
 
 
-def _persist_request_set_to_disk( request_set ):
-    pass
+def _persist_request_set_to_disk( args, request_set ):
+    for photo_id in request_set['fga_request_set']:
+        with open( os.path.join(args.request_set_json_dir, f"fga_request_set_photo_{photo_id}.json"), "w") as request_set_handle:
+            json.dump( request_set, request_set_handle, indent=4, sort_keys=True )
 
 
 def _determine_subsets( group_memberships, currently_selected_groups ):
@@ -35,15 +38,15 @@ def _create_fga_request_set( flickapi_handle, group_memberships, picture_id ):
     currently_selected_groups = {}
 
     while True:
-        print( f"Picture ID: {picture_id}")
+        print( f"\n\nPicture ID: {picture_id}")
         group_subsets = _determine_subsets( group_memberships, currently_selected_groups )
 
-        print( "\nSelected:\n" )
+        print( "\nSelected Groups:\n" )
 
         for curr_group_index in group_subsets['selected']:
             print(f"\t{group_memberships[curr_group_index]['display']}" )
 
-        print( "\n\nUnselected:\n" )
+        print( "\n\nUnselected Groups:\n" )
 
         for curr_group_index in group_subsets['unselected']:
             print(f"\t{group_memberships[curr_group_index]['display']}" )
@@ -68,6 +71,21 @@ def _create_fga_request_set( flickapi_handle, group_memberships, picture_id ):
             currently_selected_groups[selected_group_key] = None
 
     print( "Broke out of loop")
+
+    # Build the request set
+    request_set_entries = []
+    for name_index in sorted(currently_selected_groups):
+        request_set_entries.append( f"{group_memberships[name_index]['nsid']} - {group_memberships[name_index]['name']}")
+
+    fga_request_set = {
+        "fga_request_set": {
+            picture_id: request_set_entries
+        }
+    }
+
+    print( json.dumps( fga_request_set, indent=4, sort_keys=True ) )
+
+    return fga_request_set
 
 
 def _get_picture_id():
@@ -152,6 +170,7 @@ def _parse_args():
     arg_parser = argparse.ArgumentParser(description="Get list of groups for this user")
     arg_parser.add_argument( "app_api_key_info_json", help="JSON file with app API auth info")
     arg_parser.add_argument( "user_auth_info_json", help="JSON file with user auth info")
+    arg_parser.add_argument( "request_set_json_dir", help="Directory where FGA request set JSON files should be stored" )
     return arg_parser.parse_args()
 
 
@@ -166,7 +185,7 @@ def _main():
 
     picture_id = _get_picture_id()
     request_set = _create_fga_request_set( flickapi_handle, group_memberships, picture_id )
-    _persist_request_set_to_disk( request_set )
+    _persist_request_set_to_disk( args, request_set )
 
 
 if __name__ == "__main__":

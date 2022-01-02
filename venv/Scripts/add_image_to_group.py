@@ -92,6 +92,7 @@ def _parse_args():
 def _generate_state_key( photo_id, group_id ):
     return f"photo_{photo_id}_group_{group_id}"
 
+
 def _add_pic_to_group(flickrapi_handle, photo_id, group_id, state_entry ):
     # Get current timestamp
     current_timestamp = datetime.datetime.now( datetime.timezone.utc ).replace( microsecond=0 )

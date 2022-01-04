@@ -5,6 +5,7 @@ import flickrapi
 import flickrapi.auth
 import os.path
 import datetime
+import glob
 
 
 def _create_flickr_api_handle( app_flickr_api_key_info, user_flickr_auth_info ):
@@ -27,8 +28,8 @@ def _create_flickr_api_handle( app_flickr_api_key_info, user_flickr_auth_info ):
     return flickrapi_handle
 
 
-def _persist_request_set_state( args, request_set_state ):
-    with open( args.request_set_state_json, "w" ) as request_set_state_handle:
+def _persist_request_set_state( request_set_state, request_set_state_json_filename  ):
+    with open( request_set_state_json_filename, "w" ) as request_set_state_handle:
         json.dump( request_set_state, request_set_state_handle, indent=4, sort_keys=True )
 
 
@@ -39,14 +40,13 @@ def _create_state_entry( request_set_state, photo_id, group_id ):
         'fga_add_attempts': [],
     }
 
-def _read_request_set_with_state( args ):
-    args.request_set_json, args.request_set_state_json
+def _read_request_set_with_state( request_set_json_filename, request_set_state_json_filename ):
 
-    with open( args.request_set_json, "r") as request_set_handle:
+    with open( request_set_json_filename, "r") as request_set_handle:
         request_set_info = json.load( request_set_handle )['fga_request_set']
 
-    if os.path.isfile( args.request_set_state_json ):
-        with open(args.request_set_state_json, "r") as request_set_state_handle:
+    if os.path.isfile( request_set_state_json_filename  ):
+        with open(request_set_state_json_filename , "r") as request_set_state_handle:
             request_set_state_info = json.load(request_set_state_handle)
     else:
         # First time through, initialize state dictionary
@@ -84,8 +84,7 @@ def _parse_args():
     arg_parser.add_argument( "app_api_key_info_json", help="JSON file with app API auth info")
     arg_parser.add_argument( "user_auth_info_json", help="JSON file with user auth info")
     arg_parser.add_argument( "group_membership_json", help="JSON with user's group membership info")
-    arg_parser.add_argument( "request_set_json", help="JSON file with picture->group add requests")
-    arg_parser.add_argument( "request_set_state_json", help="JSON file with state for all requests in the request group")
+    arg_parser.add_argument( "request_set_json_dir", help="Directory of JSON files with picture->group add requests")
     return arg_parser.parse_args()
 
 
@@ -134,47 +133,74 @@ def _has_add_attempt_within_one_day(state_entry):
     return has_add_attempt_within_one_day_prior
 
 
+def _is_request_set_json( json_filename ):
+    with open( json_filename, "r" ) as json_handle:
+        parsed_json = json.load( json_handle )
+
+    return 'fga_request_set' in parsed_json
+
+
 def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info ):
-    # Read group membership info
-    #user_group_membership_info = _read_user_groups( args )
+    flickrapi_handle = _create_flickr_api_handle(app_flickr_api_key_info, user_flickr_auth_info)
 
-    request_set_info = _read_request_set_with_state( args )
-    #print( f"Got request set:\n{json.dumps(request_set_info, indent=4, sort_keys=True)}")
+    stats = {
+        'skipped_already_added'     : 0,
+        'skipped_too_soon'          : 0,
+        'attempted_success'         : 0,
+        'attempted_fail'            : 0,
+    }
 
-    flickrapi_handle = _create_flickr_api_handle( app_flickr_api_key_info, user_flickr_auth_info )
+    # Iterate over all JSON files in the specified directory
+    for curr_json_file in glob.glob( os.path.join( args.request_set_json_dir, "*.json") ):
+        if _is_request_set_json(curr_json_file):
+            print(f"\nReading {curr_json_file}")
+            request_set_state_json_filename = curr_json_file.replace(".json", ".state.json")
+            #print( f"{curr_json_file} is a request set JSON")
+            request_set_info = _read_request_set_with_state( curr_json_file, request_set_state_json_filename )
+            #print( f"Got request set:\n{json.dumps(request_set_info, indent=4, sort_keys=True)}")
 
-    request_state_info = request_set_info['request_set_state']
+            request_state_info = request_set_info['request_set_state']
 
-    for current_pic_id in request_set_info['request_set']:
-        current_pic_info = request_set_info['request_set'][current_pic_id]
-        #print( f"Current entry:\n{json.dumps(request_set_info['request_set'][current_pic_id], indent=4, sort_keys=True)}")
+            for current_pic_id in request_set_info['request_set']:
+                current_pic_info = request_set_info['request_set'][current_pic_id]
+                #print( f"Current entry:\n{json.dumps(request_set_info['request_set'][current_pic_id], indent=4, sort_keys=True)}")
 
-        # Iterate over all the groups we're thinking to add this pic to
-        for current_group_entry in current_pic_info:
-            # Take first token (separated by whitespace) as the group NSID. The rest is human readability fluff
-            current_group_id = current_group_entry.split()[0]
-            # Check state on this entry to make sure it wasn't already added
-            state_key = _generate_state_key( current_pic_id, current_group_id )
-            #print( f"State key: {state_key}")
-            if state_key in request_state_info:
-                state_entry = request_state_info[state_key]
-                if state_entry['photo_added']:
-                    print( f"Skipping photo {current_pic_id} to group {current_group_id}, already added")
-                    continue
-                elif _has_add_attempt_within_one_day(state_entry):
-                    print( f"Skipping photo {current_pic_id} to group {current_group_id}, already had a failure within the last day" )
-                    continue
-            else:
-                #print( f"INFO: Creating state entry for pic {current_pic_id} into group {current_group_id} as it wasn't in state info")
-                _create_state_entry(request_state_info, current_pic_id, current_group_id )
-                state_entry = request_state_info[state_key]
+                # Iterate over all the groups we're thinking to add this pic to
+                for current_group_entry in current_pic_info:
+                    # Take first token (separated by whitespace) as the group NSID. The rest is human readability fluff
+                    current_group_id = current_group_entry.split()[0]
+                    # Check state on this entry to make sure it wasn't already added
+                    state_key = _generate_state_key( current_pic_id, current_group_id )
+                    #print( f"State key: {state_key}")
+                    if state_key in request_state_info:
+                        state_entry = request_state_info[state_key]
+                        if state_entry['photo_added']:
+                            print( f"\tSkipping photo {current_pic_id} to group {current_group_id}, already added")
+                            stats['skipped_already_added'] += 1
+                            continue
+                        elif _has_add_attempt_within_one_day(state_entry):
+                            print( f"\tSkipping photo {current_pic_id} to group {current_group_id}, already had a failure within the last day" )
+                            stats['skipped_too_soon'] += 1
+                            continue
+                    else:
+                        #print( f"INFO: Creating state entry for pic {current_pic_id} into group {current_group_id} as it wasn't in state info")
+                        _create_state_entry(request_state_info, current_pic_id, current_group_id )
+                        state_entry = request_state_info[state_key]
 
-            # Attempt add, because either state says we haven't succeeded yet or there *was* no state yet
-            #print( "attempting add")
-            _add_pic_to_group( flickrapi_handle, current_pic_id, current_group_id, state_entry )
+                    # Attempt add, because either state says we haven't succeeded yet or there *was* no state yet
+                    #print( "attempting add")
+                    _add_pic_to_group( flickrapi_handle, current_pic_id, current_group_id, state_entry )
+                    if state_entry['status'] == 'success':
+                        stats['attempted_success'] += 1
+                    else:
+                        stats['attempted_fail'] += 1
 
-    _persist_request_set_state( args, request_set_info['request_set_state'] )
+            _persist_request_set_state( request_set_info['request_set_state'], request_set_state_json_filename )
+        else:
+            #print( f"\tSkipping {curr_json_file}, not a request set file")
+            pass
 
+    return stats
 
 def _main():
     args = _parse_args()
@@ -184,7 +210,8 @@ def _main():
     user_flickr_auth_info = _read_user_flickr_auth_info( args )
 
     # Ready to kick off the operations
-    _add_pics_to_groups( args, app_flickr_api_key_info, user_flickr_auth_info )
+    stats = _add_pics_to_groups( args, app_flickr_api_key_info, user_flickr_auth_info )
+    print( "\nOperation stats:\n" + json.dumps(stats, indent=4, sort_keys=True))
 
 
 if __name__ == "__main__":

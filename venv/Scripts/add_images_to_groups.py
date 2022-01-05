@@ -98,11 +98,11 @@ def _add_pic_to_group(flickrapi_handle, photo_id, group_id, state_entry ):
     #print( f"Timestamp of this attempt: {current_timestamp.isoformat()}" )
 
     try:
-        print(f"Attempting to add photo {photo_id} group {group_id}")
+        print(f"\t* Attempting to add photo {photo_id} group {group_id}")
         flickrapi_handle.groups.pools.add( photo_id=photo_id, group_id=group_id )
 
         # Success!
-        print( "\tSuccess!")
+        print( "\t\tSuccess!")
         state_entry['photo_added'] = True
         state_entry_add_attempt_details = {
             'timestamp' : current_timestamp.isoformat(),
@@ -110,7 +110,7 @@ def _add_pic_to_group(flickrapi_handle, photo_id, group_id, state_entry ):
         }
 
     except flickrapi.exceptions.FlickrError as e:
-        print( f"\t{str(e)}" )
+        print( f"\t\t{str(e)}" )
         state_entry_add_attempt_details = {
             'timestamp'     : current_timestamp.isoformat(),
             'status'        : 'fail',
@@ -120,17 +120,19 @@ def _add_pic_to_group(flickrapi_handle, photo_id, group_id, state_entry ):
     state_entry['fga_add_attempts'].append( state_entry_add_attempt_details )
 
 
-def _has_add_attempt_within_one_day(state_entry):
-    has_add_attempt_within_one_day_prior = False
-    seconds_in_one_day = 86400
+def _has_add_attempt_within_same_utc_day(state_entry):
+    has_add_attempt_within_same_utc_day = False
+    #seconds_in_one_day = 86400
+    current_timestamp = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     for curr_add_attempt in state_entry['fga_add_attempts']:
         add_attempt_timestamp = datetime.datetime.fromisoformat(curr_add_attempt['timestamp'])
-        current_timestamp = datetime.datetime.now( datetime.timezone.utc ).replace( microsecond=0 )
-        if (current_timestamp - add_attempt_timestamp).total_seconds() <= seconds_in_one_day:
-            has_add_attempt_within_one_day_prior = True
+        if current_timestamp.date() == add_attempt_timestamp.date():
+            has_add_attempt_within_same_utc_day = True
             break
 
-    return has_add_attempt_within_one_day_prior
+    #print(f"\t\tDate {add_attempt_timestamp.date()} == {current_timestamp.date()}? {has_add_attempt_within_same_utc_day}")
+
+    return has_add_attempt_within_same_utc_day
 
 
 def _is_request_set_json( json_filename ):
@@ -178,7 +180,7 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
                             print( f"\tSkipping photo {current_pic_id} to group {current_group_id}, already added")
                             stats['skipped_already_added'] += 1
                             continue
-                        elif _has_add_attempt_within_one_day(state_entry):
+                        elif _has_add_attempt_within_same_utc_day(state_entry):
                             print( f"\tSkipping photo {current_pic_id} to group {current_group_id}, already had a failure within the last day" )
                             stats['skipped_too_soon'] += 1
                             continue
@@ -190,7 +192,7 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
                     # Attempt add, because either state says we haven't succeeded yet or there *was* no state yet
                     #print( "attempting add")
                     _add_pic_to_group( flickrapi_handle, current_pic_id, current_group_id, state_entry )
-                    if state_entry['status'] == 'success':
+                    if state_entry['fga_add_attempts'][-1]['status'] == 'success':
                         stats['attempted_success'] += 1
                     else:
                         stats['attempted_fail'] += 1

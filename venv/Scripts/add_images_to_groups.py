@@ -58,13 +58,6 @@ def _read_request_set_with_state( request_set_json_filename, request_set_state_j
     }
 
 
-def _read_user_groups( args ):
-    with open( args.group_membership_json, "r") as user_group_membership_handle:
-        user_group_info = json.load( user_group_membership_handle )
-
-    return user_group_info
-
-
 def _read_user_flickr_auth_info(args):
     with open( args.user_auth_info_json, "r") as user_auth_info_handle:
         user_auth_info = json.load( user_auth_info_handle )
@@ -83,7 +76,6 @@ def _parse_args():
     arg_parser = argparse.ArgumentParser(description="Get list of groups for this user")
     arg_parser.add_argument( "app_api_key_info_json", help="JSON file with app API auth info")
     arg_parser.add_argument( "user_auth_info_json", help="JSON file with user auth info")
-    arg_parser.add_argument( "group_membership_json", help="JSON with user's group membership info")
     arg_parser.add_argument( "request_set_json_dir", help="Directory of JSON files with picture->group add requests")
     return arg_parser.parse_args()
 
@@ -181,7 +173,7 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
                             stats['skipped_already_added'] += 1
                             continue
                         elif _has_add_attempt_within_same_utc_day(state_entry):
-                            print( f"\tSkipping photo {current_pic_id} to group {current_group_id}, already had a failure within the last day" )
+                            print( f"\tSkipping photo {current_pic_id} to group {current_group_id}, already had a failure today (same UTC date)" )
                             stats['skipped_too_soon'] += 1
                             continue
                     else:

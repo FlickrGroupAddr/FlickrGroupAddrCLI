@@ -5,6 +5,62 @@ import re
 import html
 import copy
 import os.path
+import psycopg2
+import uuid
+import datetime
+
+
+def _write_requests_to_sql_db( args, request_set ):
+    with open( args.postgres_creds_json, "r" ) as pgsql_creds_handle:
+        pgsql_creds = json.load( pgsql_creds_handle )
+
+    #print( "DB creds:\n" + json.dumps(pgsql_creds, indent=4, sort_keys=True) )
+
+    db_conn = psycopg2.connect(
+        host        = pgsql_creds['db_host'],
+        user        = pgsql_creds['db_user'],
+        password    = pgsql_creds['db_passwd'],
+        database    = pgsql_creds['db_dbname'],
+    )
+    with psycopg2.connect(
+        host        = pgsql_creds['db_host'],
+        user        = pgsql_creds['db_user'],
+        password    = pgsql_creds['db_passwd'],
+        database    = pgsql_creds['db_dbname'] ) as db_conn:
+
+
+        with db_conn.cursor() as db_cursor:
+            user_cognito_id = "f803355d-4396-4b79-b7b8-d887402b25cd"
+            for curr_photo_id in request_set['fga_request_set']:
+                for group_descriptor in request_set['fga_request_set'][curr_photo_id]:
+                    request_uuid    = str( uuid.uuid4() )
+                    picture_flickr_id   = curr_photo_id
+                    flickr_group_id     = group_descriptor.split(" - ")[0]
+                    current_timestamp   = datetime.datetime.now(datetime.timezone.utc)
+
+                    sql_command = \
+"""INSERT INTO submitted_requests (
+    uuid_pk,
+    flickr_user_cognito_id,
+    picture_flickr_id,
+    flickr_group_id,
+    request_datetime ) 
+VALUES (%s, %s, %s, %s, %s);"""
+
+                    print( "SQL Command:\n" + sql_command )
+
+                    command_params = (
+                        request_uuid,
+                        user_cognito_id,
+                        picture_flickr_id,
+                        flickr_group_id,
+                        current_timestamp
+                    )
+
+                    print( "SQL Command Params:\n" + json.dumps(command_params, default=str) )
+                
+                    db_cursor.execute( sql_command, command_params )
+
 
 
 def _persist_request_set_to_disk( args, request_set ):
@@ -171,7 +227,7 @@ def _parse_args():
     arg_parser.add_argument( "app_api_key_info_json", help="JSON file with app API auth info")
     arg_parser.add_argument( "user_auth_info_json", help="JSON file with user auth info")
     #arg_parser.add_argument( "request_set_json_dir", help="Directory where FGA request set JSON files should be stored" )
-    arg_parser.add_argument( "postgres_creds", help="JSON file with all info for writing to Postgres" )
+    arg_parser.add_argument( "postgres_creds_json", help="JSON file with all info for writing to Postgres" )
     return arg_parser.parse_args()
 
 
@@ -187,6 +243,7 @@ def _main():
     picture_id = _get_picture_id()
     request_set = _create_fga_request_set( flickapi_handle, group_memberships, picture_id )
     #_persist_request_set_to_disk( args, request_set )
+    _write_requests_to_sql_db( args, request_set )
 
 
 if __name__ == "__main__":

@@ -170,7 +170,8 @@ def _parse_args():
     arg_parser = argparse.ArgumentParser(description="Get list of groups for this user")
     arg_parser.add_argument( "app_api_key_info_json", help="JSON file with app API auth info")
     arg_parser.add_argument( "user_auth_info_json", help="JSON file with user auth info")
-    arg_parser.add_argument( "request_set_json_dir", help="Directory where FGA request set JSON files should be stored" )
+    #arg_parser.add_argument( "request_set_json_dir", help="Directory where FGA request set JSON files should be stored" )
+    arg_parser.add_argument( "postgres_creds", help="JSON file with all info for writing to Postgres" )
     return arg_parser.parse_args()
 
 
@@ -185,7 +186,7 @@ def _main():
 
     picture_id = _get_picture_id()
     request_set = _create_fga_request_set( flickapi_handle, group_memberships, picture_id )
-    _persist_request_set_to_disk( args, request_set )
+    #_persist_request_set_to_disk( args, request_set )
 
 
 if __name__ == "__main__":

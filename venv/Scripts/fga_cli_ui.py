@@ -15,13 +15,6 @@ def _write_requests_to_sql_db( args, request_set ):
         pgsql_creds = json.load( pgsql_creds_handle )
 
     #print( "DB creds:\n" + json.dumps(pgsql_creds, indent=4, sort_keys=True) )
-
-    db_conn = psycopg2.connect(
-        host        = pgsql_creds['db_host'],
-        user        = pgsql_creds['db_user'],
-        password    = pgsql_creds['db_passwd'],
-        database    = pgsql_creds['db_dbname'],
-    )
     with psycopg2.connect(
         host        = pgsql_creds['db_host'],
         user        = pgsql_creds['db_user'],

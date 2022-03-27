@@ -6,6 +6,7 @@ import flickrapi.auth
 import os.path
 import datetime
 import glob
+import psycopg2
 
 
 def _create_flickr_api_handle( app_flickr_api_key_info, user_flickr_auth_info ):
@@ -76,7 +77,7 @@ def _parse_args():
     arg_parser = argparse.ArgumentParser(description="Get list of groups for this user")
     arg_parser.add_argument( "app_api_key_info_json", help="JSON file with app API auth info")
     arg_parser.add_argument( "user_auth_info_json", help="JSON file with user auth info")
-    arg_parser.add_argument( "request_set_json_dir", help="Directory of JSON files with picture->group add requests")
+    arg_parser.add_argument( "postgres_creds_json", help="JSON file with DB credentials" )
     return arg_parser.parse_args()
 
 
@@ -84,32 +85,52 @@ def _generate_state_key( photo_id, group_id ):
     return f"photo_{photo_id}_group_{group_id}"
 
 
-def _add_pic_to_group(flickrapi_handle, photo_id, group_id, state_entry ):
+def _add_pic_to_group(flickrapi_handle, photo_id, group_id ):
     # Get current timestamp
     current_timestamp = datetime.datetime.now( datetime.timezone.utc ).replace( microsecond=0 )
     #print( f"Timestamp of this attempt: {current_timestamp.isoformat()}" )
 
+    operation_status = {}
+
     try:
-        print(f"\t* Attempting to add photo {photo_id} group {group_id}")
+        print(f"\t* Attempting to add photo {photo_id} to group {group_id}")
         flickrapi_handle.groups.pools.add( photo_id=photo_id, group_id=group_id )
 
         # Success!
         print( "\t\tSuccess!")
-        state_entry['photo_added'] = True
-        state_entry_add_attempt_details = {
-            'timestamp' : current_timestamp.isoformat(),
-            'status'    : 'success',
-        }
+        operation_status[ 'photo_added'] = True
+        operation_status[ 'timestamp' ] =  current_timestamp.isoformat()
+        operation_status[ 'status' ] = 'success_added' 
 
     except flickrapi.exceptions.FlickrError as e:
-        print( f"\t\t{str(e)}" )
-        state_entry_add_attempt_details = {
-            'timestamp'     : current_timestamp.isoformat(),
-            'status'        : 'fail',
-            'error_message' : str(e),
-        }
+        error_string = str(e)
+        group_throttled_msg = "Error: 5:"
+        adding_to_pending_queue_error_msg = "Error: 6:"
+        if error_string.startswith(group_throttled_msg):
+            operation_status = {
+                'timestamp'         : current_timestamp.isoformat(),
+                'status'            : 'fail_group_throttled',
+                'error_message'     : error_string,
+                'photo_added'       : False
+            }
+            print(f"\t\tGroup {group_id} has hit its throttle limit for the day")
+        elif error_string.startswith(adding_to_pending_queue_error_msg):
+            operation_status = {
+                'timestamp'         : current_timestamp.isoformat(),
+                'status'            : 'success_queued',
+                'photo_added'       : True
+            }
+            print( "\t\tSuccess (added to pending queue)!")
+        else:
+            print( f"\t\t{error_string}" )
+            operation_status = {
+                'timestamp'         : current_timestamp.isoformat(),
+                'status'            : 'fail',
+                'error_message'     : str(e),
+                'photo_added'       : False,
+            }
 
-    state_entry['fga_add_attempts'].append( state_entry_add_attempt_details )
+    return operation_status
 
 
 def _has_add_attempt_within_same_utc_day(state_entry):
@@ -134,6 +155,36 @@ def _is_request_set_json( json_filename ):
     return 'fga_request_set' in parsed_json
 
 
+
+def _get_group_memberships_for_pic( flickrapi_handle, pic_id ):
+    pic_contexts = flickrapi_handle.photos.getAllContexts( photo_id=pic_id )
+
+    #print( "Contexts:\n" + json.dumps(pic_contexts, indent=4, sort_keys=True))
+    group_memberships = {}
+    if 'pool' in pic_contexts:
+        for curr_group in pic_contexts['pool']:
+            group_memberships[ curr_group['id']] = curr_group
+
+    #print( "Group memberships:\n" + json.dumps(group_memberships, indent=4, sort_keys=True))
+
+    return group_memberships
+
+
+def _get_group_memberships_for_user( flickrapi_handle ):
+    return_groups = {}
+    user_groups = flickrapi_handle.groups.pools.getGroups() 
+
+    #print( "User memberships:\n" + json.dumps(user_groups, indent=4, sort_keys=True))
+    if 'groups' in user_groups and 'group' in user_groups['groups']:
+        for curr_group in user_groups['groups']['group']:
+            #print("Processing group:\n" + json.dumps(curr_group, indent=4, sort_keys=True) )
+            if 'id' in curr_group:
+                return_groups[curr_group['id']] = None
+             
+
+    return return_groups
+
+
 def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info ):
     flickrapi_handle = _create_flickr_api_handle(app_flickr_api_key_info, user_flickr_auth_info)
 
@@ -143,6 +194,93 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
         'attempted_success'         : 0,
         'attempted_fail'            : 0,
     }
+
+    with open( args.postgres_creds_json, "r" ) as pgsql_creds_handle:
+        pgsql_creds = json.load( pgsql_creds_handle )
+
+    user_submitted_requests = []
+
+    # Pull all DB requests, ordered chronologically
+    with psycopg2.connect(
+        host        = pgsql_creds['db_host'],
+        user        = pgsql_creds['db_user'],
+        password    = pgsql_creds['db_passwd'],
+        database    = pgsql_creds['db_dbname'] ) as db_conn:
+
+
+        with db_conn.cursor() as db_cursor:
+            sql_command = """
+                SELECT      flickr_user_cognito_id, 
+                            picture_flickr_id, 
+                            flickr_group_id
+                FROM        submitted_requests
+                ORDER BY    request_datetime;
+            """
+            db_cursor.execute( sql_command )
+
+            user_groups = {}
+            groups_per_pic = {}
+
+            for curr_user_request in db_cursor.fetchall():
+                #print( "Got user request: " + json.dumps(curr_user_request, default=str) )
+
+                user_request_details = {
+                    "request_user_cognito_id"       : curr_user_request[0],
+                    "request_flickr_picture_id"     : curr_user_request[1],
+                    "request_flickr_group_id"       : curr_user_request[2],
+                }
+
+                print( "Got user request:\n" + json.dumps(user_request_details, indent=4, sort_keys=True) )
+
+                # If this is the first time we've hit this user, pull their list of group memberships to see if if's even a
+                # possibility to add it
+                if user_request_details["request_user_cognito_id"] not in user_groups:
+                    user_groups[ user_request_details["request_user_cognito_id"] ] = _get_group_memberships_for_user(
+                        flickrapi_handle)
+                    #print( "User memberships:\n" + 
+                    #    json.dumps( user_groups[ user_request_details["request_user_cognito_id"] ], indent=4, sort_keys=True) )
+
+
+                # If this is first time we've seen this picture, pull list of groups it's already in
+                if user_request_details["request_flickr_picture_id"] not in groups_per_pic:
+                    groups_per_pic[ user_request_details["request_flickr_picture_id"] ] = _get_group_memberships_for_pic(
+                        flickrapi_handle, user_request_details["request_flickr_picture_id"] )
+
+                    #print( "initialized cache of groups for pic " + user_request_details["request_flickr_picture_id"] + " to:" +
+                    #    json.dumps( groups_per_pic[ user_request_details["request_flickr_picture_id"] ], indent=4,
+                    #    sort_keys=True) )
+
+                # If the user isn't in the requested group, bail
+                if user_request_details['request_flickr_group_id'] not in \
+                        user_groups[ user_request_details["request_user_cognito_id"] ]:
+
+                    print( "User requested a picture be added into a group they are not in, skipping" )
+                    continue
+
+                # If this pic is already in the requested group, skip it
+                if user_request_details['request_flickr_group_id'] in \
+                    groups_per_pic[user_request_details["request_flickr_picture_id"]]:
+
+                    print( f"Pic {user_request_details['request_flickr_picture_id']} already in group " +
+                        f"{user_request_details['request_flickr_group_id']}, skipping" )
+
+                    continue
+
+
+                print( "User is in requested group and the picture is not in the group, attempting group add API call" )
+                results_of_add_attempt = _add_pic_to_group( flickrapi_handle, user_request_details["request_flickr_picture_id"],
+                    user_request_details['request_flickr_group_id'] )
+                    
+                
+
+
+
+            print( "Done printing requests" )
+
+  
+    return
+
+
 
     # Iterate over all JSON files in the specified directory
     for curr_json_file in glob.glob( os.path.join( args.request_set_json_dir, "*.json") ):

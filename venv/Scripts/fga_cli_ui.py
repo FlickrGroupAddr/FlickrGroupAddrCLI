@@ -47,7 +47,7 @@ def _write_requests_to_sql_db( args, request_set ):
     request_datetime ) 
 VALUES (%s, %s, %s, %s, %s);"""
 
-                    print( "SQL Command:\n" + sql_command )
+                    #print( "SQL Command:\n" + sql_command )
 
                     command_params = (
                         request_uuid,
@@ -57,7 +57,7 @@ VALUES (%s, %s, %s, %s, %s);"""
                         current_timestamp
                     )
 
-                    print( "SQL Command Params:\n" + json.dumps(command_params, default=str) )
+                    #print( "SQL Command Params:\n" + json.dumps(command_params, default=str) )
                 
                     db_cursor.execute( sql_command, command_params )
 

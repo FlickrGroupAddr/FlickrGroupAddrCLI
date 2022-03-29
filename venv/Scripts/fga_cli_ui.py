@@ -10,6 +10,36 @@ import uuid
 import datetime
 
 
+def _remove_groups_pic_already_in( flickrapi_handle, request_set ):
+    for pic_id in request_set['fga_request_set']:
+        groups_pic_in = _get_group_memberships_for_pic( flickrapi_handle, pic_id )
+        request_set_pruned_group_strings = []
+        for curr_group_string in request_set['fga_request_set'][pic_id]:
+            group_id = curr_group_string.split(" - ")[0]
+            if group_id not in groups_pic_in:
+                request_set_pruned_group_strings.append( curr_group_string )
+            else:
+                print( f"\tDropping out group {curr_group_string} due to pic already in that group" )
+
+        # Drop the pruned set back in
+        request_set['fga_request_set'][pic_id] = request_set_pruned_group_strings
+
+
+def _get_group_memberships_for_pic( flickrapi_handle, pic_id ):
+    pic_contexts = flickrapi_handle.photos.getAllContexts( photo_id=pic_id )
+
+    #print( "Contexts:\n" + json.dumps(pic_contexts, indent=4, sort_keys=True))
+    group_memberships = {}
+    if 'pool' in pic_contexts:
+        for curr_group in pic_contexts['pool']:
+            group_memberships[ curr_group['id']] = curr_group
+
+    #print( "Group memberships:\n" + json.dumps(group_memberships, indent=4, sort_keys=True))
+
+    return group_memberships
+
+
+
 def _write_requests_to_sql_db( args, request_set ):
     with open( args.postgres_creds_json, "r" ) as pgsql_creds_handle:
         pgsql_creds = json.load( pgsql_creds_handle )
@@ -38,7 +68,8 @@ def _write_requests_to_sql_db( args, request_set ):
     picture_flickr_id,
     flickr_group_id,
     request_datetime ) 
-VALUES (%s, %s, %s, %s, %s);"""
+VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (flickr_user_cognito_id, picture_flickr_id, flickr_group_id) DO NOTHING;"""
 
                     #print( "SQL Command:\n" + sql_command )
 
@@ -51,7 +82,6 @@ VALUES (%s, %s, %s, %s, %s);"""
                     )
 
                     #print( "SQL Command Params:\n" + json.dumps(command_params, default=str) )
-                
                     db_cursor.execute( sql_command, command_params )
 
 
@@ -229,13 +259,14 @@ def _main():
 
     app_flickr_api_key_info = _read_app_flickr_api_key_info( args )
     user_flickr_auth_info = _read_user_flickr_auth_info( args )
-    flickapi_handle = _create_flickr_api_handle(app_flickr_api_key_info, user_flickr_auth_info)
-    group_memberships = _get_user_groups(flickapi_handle)
+    flickrapi_handle = _create_flickr_api_handle(app_flickr_api_key_info, user_flickr_auth_info)
+    group_memberships = _get_user_groups(flickrapi_handle)
     #print( "Memberships:\n" + json.dumps(group_memberships, indent=4, sort_keys=True))
 
     picture_id = _get_picture_id()
-    request_set = _create_fga_request_set( flickapi_handle, group_memberships, picture_id )
+    request_set = _create_fga_request_set( flickrapi_handle, group_memberships, picture_id )
     #_persist_request_set_to_disk( args, request_set )
+    _remove_groups_pic_already_in( flickrapi_handle, request_set )
     _write_requests_to_sql_db( args, request_set )
 
 

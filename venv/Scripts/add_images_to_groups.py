@@ -101,7 +101,7 @@ def _add_pic_to_group(flickrapi_handle, photo_id, group_id ):
         print( "\t\tSuccess!")
         operation_status[ 'photo_added'] = True
         operation_status[ 'timestamp' ] =  current_timestamp.isoformat()
-        operation_status[ 'status' ] = 'success_added' 
+        operation_status[ 'status' ] = 'permstatus_success_added' 
 
     except flickrapi.exceptions.FlickrError as e:
         error_string = str(e)
@@ -110,7 +110,7 @@ def _add_pic_to_group(flickrapi_handle, photo_id, group_id ):
         if error_string.startswith(group_throttled_msg):
             operation_status = {
                 'timestamp'         : current_timestamp.isoformat(),
-                'status'            : 'fail_group_throttled',
+                'status'            : 'defer_group_throttled_for_user',
                 'error_message'     : error_string,
                 'photo_added'       : False
             }
@@ -118,7 +118,7 @@ def _add_pic_to_group(flickrapi_handle, photo_id, group_id ):
         elif error_string.startswith(adding_to_pending_queue_error_msg):
             operation_status = {
                 'timestamp'         : current_timestamp.isoformat(),
-                'status'            : 'success_queued',
+                'status'            : 'permstatus_success_added_queued',
                 'photo_added'       : True
             }
             print( "\t\tSuccess (added to pending queue)!")
@@ -126,8 +126,7 @@ def _add_pic_to_group(flickrapi_handle, photo_id, group_id ):
             print( f"\t\t{error_string}" )
             operation_status = {
                 'timestamp'         : current_timestamp.isoformat(),
-                'status'            : 'fail',
-                'error_message'     : str(e),
+                'status'            : 'fail_' + str(e),
                 'photo_added'       : False,
             }
 
@@ -184,6 +183,29 @@ def _get_group_memberships_for_user( flickrapi_handle ):
              
 
     return return_groups
+
+def _last_attempt_status_is_permanent_status( uuid_pk, db_cursor  ):
+    sql_command = """
+        SELECT final_status 
+        FROM group_add_attempts
+        WHERE submitted_request_fk = %s
+        ORDER BY attempt_completed DESC
+        LIMIT 1;
+    """
+
+    sql_params = ( uuid_pk, )
+    db_cursor.execute( sql_command, sql_params )
+
+    returned_row = db_cursor.fetchone()
+    if returned_row is None:
+        return False
+
+    most_recent_status = returned_row[0]
+    print( "Most recent status: {most_recent_status}" )
+        
+    return most_recent_status.startswith("permstatus_" )
+    
+
 
 
 def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info ):
@@ -257,6 +279,11 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
                 add_attempt_guid    = str( uuid.uuid4() )
                 request_id          = user_request_details[ 'request_id' ]
 
+                # Let's see if previous add attempt status allows us to continue
+                if _last_attempt_status_is_permanent_status( user_request_details['request_id'], db_cursor ) is True:
+                    print( "Bailing due to previous status being permanent, no more attempts on this request permitted" )
+                    continue
+
                 sql_command = """
                     INSERT INTO group_add_attempts( uuid_pk, submitted_request_fk, attempt_started )
                     VALUES ( %s, %s, %s )
@@ -294,7 +321,7 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
                         user_groups[ user_request_details["request_user_cognito_id"] ]:
 
                     print( "User requested a picture be added into a group they are not in" )
-                    attempt_status = "permfail"
+                    attempt_status = "permstatus_fail_user_not_in_flickr_group"
 
                 # If this pic is already in the requested group, skip it
                 elif user_request_details['request_flickr_group_id'] in \
@@ -303,17 +330,19 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
                     print( f"Pic {user_request_details['request_flickr_picture_id']} already in group " +
                         f"{user_request_details['request_flickr_group_id']}" )
 
-                    attempt_status = "noop_pic_already_in_group"
+                    attempt_status = "permstatus_success_pic_already_in_group"
 
                 else:
+                    # Let's see if the most recent attempt status tells us not try to again (e.g., pic already in group)
                     print( "User is in requested group and the picture is not in the group, attempting group add API call" )
 
-                    results_of_add_attempt = _add_pic_to_group( flickrapi_handle, user_request_details["request_flickr_picture_id"],
+                    results_of_add_attempt = _add_pic_to_group( flickrapi_handle, 
+                        user_request_details["request_flickr_picture_id"],
                         user_request_details['request_flickr_group_id'] )
 
                     attempt_status = results_of_add_attempt['status']
 
-                    #print( "Results of add attempt:\n" + json.dumps(results_of_add_attempt) )
+                        #print( "Results of add attempt:\n" + json.dumps(results_of_add_attempt) )
 
                 # Do update of this attempt
                 sql_command = """

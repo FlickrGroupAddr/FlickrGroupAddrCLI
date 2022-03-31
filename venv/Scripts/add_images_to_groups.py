@@ -7,6 +7,7 @@ import os.path
 import datetime
 import glob
 import psycopg2
+import uuid
 
 
 def _create_flickr_api_handle( app_flickr_api_key_info, user_flickr_auth_info ):
@@ -207,14 +208,34 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
         password    = pgsql_creds['db_passwd'],
         database    = pgsql_creds['db_dbname'] ) as db_conn:
 
+        # Explaination of query
+        #
+        #   Inner query: get list of ID's with the date of the most recent time we attempted
+        #                   to process this user request. The WHERE clause limits the rows to those
+        #                   of interest (i.e., date most recent attempt is NULL (meaning we never tried it)
+        #
+        #
+        #   Outer query: take the user submitted ID 
 
         with db_conn.cursor() as db_cursor:
             sql_command = """
-                SELECT      flickr_user_cognito_id, 
-                            picture_flickr_id, 
-                            flickr_group_id
-                FROM        submitted_requests
-                ORDER BY    request_datetime;
+                SELECT      inner_query.user_submitted_request_id,
+	                        submitted_requests.flickr_user_cognito_id,
+	                        submitted_requests.picture_flickr_id,
+	                        submitted_requests.flickr_group_id
+                FROM (
+	                SELECT  submitted_requests.uuid_pk AS user_submitted_request_id,
+                            DATE(MAX(attempt_started)) AS most_recent_attempt_date
+                    FROM submitted_requests
+                    LEFT JOIN group_add_attempts
+                    ON submitted_requests.uuid_pk = group_add_attempts.submitted_request_fk
+                    GROUP BY submitted_requests.uuid_pk
+                ) AS inner_query
+                JOIN submitted_requests
+                ON inner_query.user_submitted_request_id = submitted_requests.uuid_pk
+                WHERE inner_query.most_recent_attempt_date IS NULL 
+                    OR (inner_query.most_recent_attempt_date <> date(now()))
+                ORDER BY submitted_requests.request_datetime;
             """
             db_cursor.execute( sql_command )
 
@@ -225,12 +246,30 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
                 #print( "Got user request: " + json.dumps(curr_user_request, default=str) )
 
                 user_request_details = {
-                    "request_user_cognito_id"       : curr_user_request[0],
-                    "request_flickr_picture_id"     : curr_user_request[1],
-                    "request_flickr_group_id"       : curr_user_request[2],
+                    "request_id"                    : curr_user_request[0],
+                    "request_user_cognito_id"       : curr_user_request[1],
+                    "request_flickr_picture_id"     : curr_user_request[2],
+                    "request_flickr_group_id"       : curr_user_request[3],
                 }
 
-                print( "Got user request:\n" + json.dumps(user_request_details, indent=4, sort_keys=True) )
+                print( "Got user request:\n" + json.dumps(user_request_details, indent=4, sort_keys=True, default=str) )
+
+                add_attempt_guid    = str( uuid.uuid4() )
+                request_id          = user_request_details[ 'request_id' ]
+
+                sql_command = """
+                    INSERT INTO group_add_attempts( uuid_pk, submitted_request_fk, attempt_started )
+                    VALUES ( %s, %s, %s )
+                    RETURNING uuid_pk;
+                """
+
+                sql_params = ( add_attempt_guid, request_id, "NOW()" )
+                db_cursor.execute( sql_command, sql_params )
+
+                add_attempt_guid = db_cursor.fetchone()[0]
+
+                #print( f"GUID for this add attempt: {add_attempt_guid}" )
+
 
                 # If this is the first time we've hit this user, pull their list of group memberships to see if if's even a
                 # possibility to add it
@@ -250,29 +289,41 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
                     #    json.dumps( groups_per_pic[ user_request_details["request_flickr_picture_id"] ], indent=4,
                     #    sort_keys=True) )
 
-                # If the user isn't in the requested group, bail
+                # If the user isn't in the requested group, mark a permfail
                 if user_request_details['request_flickr_group_id'] not in \
                         user_groups[ user_request_details["request_user_cognito_id"] ]:
 
-                    print( "User requested a picture be added into a group they are not in, skipping" )
-                    continue
+                    print( "User requested a picture be added into a group they are not in" )
+                    attempt_status = "permfail"
 
                 # If this pic is already in the requested group, skip it
-                if user_request_details['request_flickr_group_id'] in \
+                elif user_request_details['request_flickr_group_id'] in \
                     groups_per_pic[user_request_details["request_flickr_picture_id"]]:
 
                     print( f"Pic {user_request_details['request_flickr_picture_id']} already in group " +
-                        f"{user_request_details['request_flickr_group_id']}, skipping" )
+                        f"{user_request_details['request_flickr_group_id']}" )
 
-                    continue
+                    attempt_status = "noop_pic_already_in_group"
 
+                else:
+                    print( "User is in requested group and the picture is not in the group, attempting group add API call" )
 
-                print( "User is in requested group and the picture is not in the group, attempting group add API call" )
-                results_of_add_attempt = _add_pic_to_group( flickrapi_handle, user_request_details["request_flickr_picture_id"],
-                    user_request_details['request_flickr_group_id'] )
-                    
-                
+                    results_of_add_attempt = _add_pic_to_group( flickrapi_handle, user_request_details["request_flickr_picture_id"],
+                        user_request_details['request_flickr_group_id'] )
 
+                    attempt_status = results_of_add_attempt['status']
+
+                    #print( "Results of add attempt:\n" + json.dumps(results_of_add_attempt) )
+
+                # Do update of this attempt
+                sql_command = """
+                    UPDATE group_add_attempts 
+                    SET attempt_completed = %s, final_status = %s
+                    WHERE uuid_pk = %s;
+                """
+
+                sql_params = ( "NOW()", attempt_status, add_attempt_guid )
+                db_cursor.execute( sql_command, sql_params )
 
 
             print( "Done printing requests" )

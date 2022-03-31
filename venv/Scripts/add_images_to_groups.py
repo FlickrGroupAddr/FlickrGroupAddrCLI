@@ -355,7 +355,7 @@ def _add_pics_to_groups( args,  app_flickr_api_key_info, user_flickr_auth_info )
                 db_cursor.execute( sql_command, sql_params )
 
 
-            print( "Done printing requests" )
+            #print( "Done printing requests" )
 
   
     return
